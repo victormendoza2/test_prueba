@@ -86,11 +86,16 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
 
-<script>
-  // ---------- Mensajes (ya definido en Bloque 1/2 pero reforzamos su uso) ----------
-  // showStatus(msg, color) ya se definió en el bloque 1/2 dentro del <style>/<head>.
-  // Si por alguna razón no quedó, descomenta la siguiente implementación:
-  // function showStatus(msg, color="#0b6b2b"){ const el=document.getElementById('status-msg'); el.style.background=color; el.textContent=msg; el.classList.add('show'); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),1800); }
+  <script>
+  // ---------- Mensajes ----------
+  function showStatus(msg, color="#0b6b2b") {
+    const el = document.getElementById('status-msg');
+    el.style.background = color;
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(()=> el.classList.remove('show'), 1800);
+  }
 
   // ---------- CRS ----------
   proj4.defs("EPSG:32717","+proj=utm +zone=17 +south +datum=WGS84 +units=m +no_defs");
@@ -101,7 +106,6 @@
   const map = L.map('map').setView([-7.2, -78.5], 8);
   const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
   const googleSat = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{attribution:'© Google'});
-
   L.control.layers({"OSM":osm,"Google Satélite":googleSat}).addTo(map);
 
   // ---------- Capas ----------
@@ -110,7 +114,6 @@
   const drawnItems = new L.FeatureGroup().addTo(map);
   const trackLayer = L.polyline([], { color:'red', weight:3 }).addTo(map);
 
-  // ---------- Variables globales ----------
   let gpsMarker=null, accuracyCircle=null, watchId=null;
   let gpsVertices=[], trackCoords=[];
   let activePolygon=null, lastTrackPoint=null;
@@ -120,30 +123,28 @@
   // ---------- Array global de geometrías para descarga ----------
   let geometries = [];
 
-  // ---------- Etiquetas (área en ha con 3 decimales) ----------
+  // ---------- Etiquetas ----------
   function addOrUpdateLabel(layer){
     try {
-      const gj = layer.toGeoJSON();
-      const area_m2 = turf.area(gj);
+      // area en m2 -> pasar a hectáreas
+      const area_m2 = turf.area(layer.toGeoJSON());
       const area_ha = area_m2 / 10000;
       const area_ha_rounded = parseFloat(area_ha.toFixed(3)); // 3 decimales
 
-      // center: usar centroide de turf para mejor posicionamiento
-      const center = turf.centerOfMass(gj).geometry.coordinates; // [lon, lat]
-
+      const center = layer.getBounds().getCenter();
       if(layer._label) map.removeLayer(layer._label);
-      layer._label = L.marker([center[1], center[0]], {
-        icon: L.divIcon({ className:'label', html:`${area_ha_rounded} ha`})
-      }).addTo(map);
+      layer._label = L.marker(center,{icon:L.divIcon({className:'label',html:`${area_ha_rounded} ha`})}).addTo(map);
 
-      // Actualizar propiedad area_ha si la geometría ya está en 'geometries'
+      // Si la geometría ya fue guardada en 'geometries', actualizar su propiedad area_ha
+      // (si existe featureId lo podrías usar; aquí actualizamos buscando igualdad geométrica simple)
       try {
+        const gj = layer.toGeoJSON();
         const coordsStr = JSON.stringify(gj.geometry.coordinates);
-        for (let i=0;i<geometries.length;i++){
-          if (JSON.stringify(geometries[i].geometry.coordinates) === coordsStr){
+        for(let i=0;i<geometries.length;i++){
+          if(JSON.stringify(geometries[i].geometry.coordinates) === coordsStr){
             geometries[i].properties = geometries[i].properties || {};
             geometries[i].properties.area_ha = area_ha_rounded;
-            return;
+            break;
           }
         }
       } catch(e){}
@@ -151,187 +152,114 @@
   }
 
   function clearAllLabels(){
-    map.eachLayer(l => { 
-      if(l instanceof L.Marker && l.options.icon?.options?.className === 'label') map.removeLayer(l); 
-    });
+    map.eachLayer(l => { if(l instanceof L.Marker && l.options.icon?.options?.className === 'label') map.removeLayer(l); });
     drawnItems.eachLayer(l => { if(l._label){ map.removeLayer(l._label); delete l._label; }});
   }
 
-  // ---------------------
-  // DIBUJO MANUAL (Leaflet Draw)
-  // ---------------------
+  // ---------- Dibujo manual ----------
   const drawControl = new L.Control.Draw({
     draw:{ polygon:{allowIntersection:false,showArea:true,shapeOptions:{color:'#0b6b2b'}}, marker:true, polyline:false, rectangle:false, circle:false, circlemarker:false },
     edit:{ featureGroup:drawnItems, edit:true, remove:true }
   });
   map.addControl(drawControl);
+  map.on(L.Draw.Event.CREATED,e=>{drawnItems.addLayer(e.layer);if(e.layer instanceof L.Polygon) { addOrUpdateLabel(e.layer); saveGeometry(e.layer); } saveSession();});
+  map.on(L.Draw.Event.EDITED,e=>{e.layers.eachLayer(l=>{if(l instanceof L.Polygon)addOrUpdateLabel(l);});saveSession();});
+  map.on(L.Draw.Event.DELETED,()=>{clearAllLabels();saveSession();});
 
-  map.on(L.Draw.Event.CREATED, e=>{
-    drawnItems.addLayer(e.layer);
-    if (e.layer instanceof L.Polygon){
-      addOrUpdateLabel(e.layer);
-      saveGeometry(e.layer);
-    }
-    saveSession();
-  });
-
-  map.on(L.Draw.Event.EDITED, e=>{
-    e.layers.eachLayer(l=>{
-      if (l instanceof L.Polygon) addOrUpdateLabel(l);
-    });
-    saveSession();
-  });
-
-  map.on(L.Draw.Event.DELETED, e=>{
-    // eliminar labels y geometrías relacionadas (hace simple limpieza)
-    clearAllLabels();
-    // reconstruir array geometries desde capas existentes (opcional pero seguro)
-    geometries = [];
-    drawnItems.eachLayer(l=>{
-      if(l instanceof L.Polygon) saveGeometry(l);
-    });
-    uploadedLayer.eachLayer(l=>{
-      if(l instanceof L.Polygon) saveGeometry(l);
-    });
-    gpsLayer.eachLayer(l=>{
-      if(l instanceof L.Polygon) saveGeometry(l);
-    });
-    saveSession();
-  });
-
-  // ---------------------
-  // GPS DINÁMICO
-  // ---------------------
+  // ---------- GPS dinámico ----------
   document.getElementById('btn-gps').onclick=()=>{
-    if(watchId){
-      navigator.geolocation.clearWatch(watchId);
-      watchId=null;
-      document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-location-dot"></i>&nbsp;Activar GPS';
-      showStatus('GPS detenido','#d9534f');
-      return;
-    }
-    if(!navigator.geolocation) return alert('GPS no disponible.');
-
+    if(watchId){navigator.geolocation.clearWatch(watchId);watchId=null;document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-location-dot"></i>&nbsp;Activar GPS';showStatus('GPS detenido','#d9534f');return;}
+    if(!navigator.geolocation)return alert('GPS no disponible.');
     document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-stop"></i>&nbsp;Detener GPS';
     showStatus('GPS activado');
 
-    watchId = navigator.geolocation.watchPosition(p=>{
-      const lat = p.coords.latitude;
-      const lng = p.coords.longitude;
-      const acc = p.coords.accuracy;
+    watchId=navigator.geolocation.watchPosition(p=>{
+      const lat=p.coords.latitude,lng=p.coords.longitude,acc=p.coords.accuracy;
+      if(!gpsMarker)gpsMarker=L.circleMarker([lat,lng],{radius:8,color:'#ff5722',fillColor:'#ff5722',fillOpacity:1}).addTo(map);
+      gpsMarker.setLatLng([lat,lng]);gpsMarker.accuracy=acc;
+      if(accuracyCircle)map.removeLayer(accuracyCircle);
+      accuracyCircle=L.circle([lat,lng],{radius:acc,color:colorForPrecision(acc),weight:1,fillOpacity:0.08}).addTo(map);
 
-      if(!gpsMarker) gpsMarker = L.circleMarker([lat,lng],{radius:8,color:'#ff5722',fillColor:'#ff5722',fillOpacity:1}).addTo(map);
-      gpsMarker.setLatLng([lat,lng]);
-      gpsMarker.accuracy = acc;
+      if(acc<precisionGood)gpsMarker.setStyle({color:'#2ecc71',fillColor:'#2ecc71'});
+      else if(acc<=precisionMed)gpsMarker.setStyle({color:'#f1c40f',fillColor:'#f1c40f'});
+      else gpsMarker.setStyle({color:'#e74c3c',fillColor:'#e74c3c'});
 
-      if(accuracyCircle) map.removeLayer(accuracyCircle);
-      accuracyCircle = L.circle([lat,lng],{radius:acc,color:colorForPrecision(acc),weight:1,fillOpacity:0.08}).addTo(map);
-
-      if(acc < precisionGood) gpsMarker.setStyle({color:'#2ecc71', fillColor:'#2ecc71'});
-      else if(acc <= precisionMed) gpsMarker.setStyle({color:'#f1c40f', fillColor:'#f1c40f'});
-      else gpsMarker.setStyle({color:'#e74c3c', fillColor:'#e74c3c'});
-
-      const current = [lat,lng];
-      if(!lastTrackPoint || distanceMeters(lastTrackPoint, current) > 10){
+      const current=[lat,lng];
+      if(!lastTrackPoint||distanceMeters(lastTrackPoint,current)>10){
         trackCoords.push(current);
         trackLayer.setLatLngs(trackCoords);
-        lastTrackPoint = current;
+        lastTrackPoint=current;
       }
 
-      infoPrecision.innerText = `📡 Precisión: ${acc.toFixed(1)} m`;
+      infoPrecision.innerText=`📡 Precisión: ${acc.toFixed(1)} m`;
       saveSession();
-    }, err => alert("Error GPS: " + err.message), { enableHighAccuracy:true });
+    },err=>alert("Error GPS: "+err.message),{enableHighAccuracy:true});
   };
 
   function colorForPrecision(acc){
-    if(acc<=5) return '#2ecc71';
-    if(acc<=7) return '#f1c40f';
-    return '#e74c3c';
+    if(acc<=5)return'#2ecc71';
+    if(acc<=7)return'#f1c40f';
+    return'#e74c3c';
   }
 
   function distanceMeters(a,b){
-    const R=6371000, rad=Math.PI/180;
-    const dLat=(b[0]-a[0])*rad, dLon=(b[1]-a[1])*rad;
-    const lat1=a[0]*rad, lat2=b[0]*rad;
-    const hav = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+    const R=6371000,rad=Math.PI/180;
+    const dLat=(b[0]-a[0])*rad,dLon=(b[1]-a[1])*rad;
+    const lat1=a[0]*rad,lat2=b[0]*rad;
+    const hav=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
     return 2*R*Math.asin(Math.sqrt(hav));
   }
 
-  // ---------------------
-  // AGREGAR VÉRTICE GPS
-  // ---------------------
   document.getElementById('btn-gps-vertex').onclick=()=>{
-    if(!gpsMarker) return alert('Activa el GPS primero.');
-    const acc = gpsMarker.accuracy || 999;
-    if(acc > precisionMed && !confirm(`Precisión baja (${acc.toFixed(1)} m). ¿Agregar vértice igualmente?`)) return;
-
-    const p = gpsMarker.getLatLng();
+    if(!gpsMarker)return alert('Activa el GPS primero.');
+    const acc=gpsMarker.accuracy||999;
+    if(acc>precisionMed&&!confirm(`Precisión baja (${acc.toFixed(1)} m). ¿Agregar vértice igualmente?`))return;
+    const p=gpsMarker.getLatLng();
     gpsVertices.push([p.lat,p.lng]);
     L.circleMarker(p,{radius:5,color:'#0b6b2b',fillColor:'#0b6b2b',fillOpacity:1}).addTo(gpsLayer);
-
-    if(!activePolygon && gpsVertices.length >= 3){
-      activePolygon = L.polygon(gpsVertices, {color:'#0b6b2b', fillOpacity:0.12}).addTo(gpsLayer);
+    if(!activePolygon&&gpsVertices.length>=3){
+      activePolygon=L.polygon(gpsVertices,{color:'#0b6b2b',fillOpacity:0.12}).addTo(gpsLayer);
       addOrUpdateLabel(activePolygon);
       saveGeometry(activePolygon);
-    } else if(activePolygon){
+    }else if(activePolygon){
       activePolygon.setLatLngs(gpsVertices);
       addOrUpdateLabel(activePolygon);
     }
     saveSession();
   };
 
-  // ---------------------
-  // CARGAR ARCHIVOS (CSV/EXCEL)
-  // ---------------------
-  document.getElementById('btn-upload').onclick = () => document.getElementById('file-input').click();
-
-  document.getElementById('file-input').onchange = e => {
-    const file = e.target.files[0];
-    if(!file) return;
-    const ext = file.name.split('.').pop().toLowerCase();
-    const crs = document.getElementById('crs-select').value;
-    if (ext === 'csv') parseCSV(file, crs); else parseXLSX(file, crs);
+  // ---------- Cargar archivos ----------
+  document.getElementById('btn-upload').onclick=()=>document.getElementById('file-input').click();
+  document.getElementById('file-input').onchange=e=>{
+    const file=e.target.files[0]; if(!file)return;
+    const ext=file.name.split('.').pop().toLowerCase();
+    const crs=document.getElementById('crs-select').value;
+    if(ext==='csv')parseCSV(file,crs);else parseXLSX(file,crs);
   };
-
-  function parseCSV(file, crs){
-    Papa.parse(file, { header:true, skipEmptyLines:true, complete: r => handleRows(r.data, crs) });
-  }
-
-  function parseXLSX(file, crs){
-    const reader = new FileReader();
-    reader.onload = e => {
-      const wb = XLSX.read(e.target.result, { type:'binary' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { header:1 });
-      if(!data || data.length < 2) return showStatus('Archivo vacío o sin datos','#d9534f');
-
-      const headers = data[0].map(h => String(h).toLowerCase());
-      const colE = headers.findIndex(h => h.includes('este') || h === 'x' || h === 'e' || h.includes('lon') );
-      const colN = headers.findIndex(h => h.includes('norte') || h === 'y' || h === 'n' || h.includes('lat') );
-
-      // fallback: intentar columnas 0 y 1
-      const coords = data.slice(1).map(r => {
-        const vx = (colE >= 0) ? parseFloat(r[colE]) : parseFloat(r[0]);
-        const vy = (colN >= 0) ? parseFloat(r[colN]) : parseFloat(r[1]);
-        return [vx, vy];
-      });
-
-      handleRows(coords, crs, true);
+  function parseCSV(file,crs){Papa.parse(file,{header:true,complete:r=>handleRows(r.data,crs)});}
+  function parseXLSX(file,crs){
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const wb=XLSX.read(e.target.result,{type:'binary'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const data=XLSX.utils.sheet_to_json(ws,{header:1});
+      const headers=data[0].map(h=>String(h).toLowerCase());
+      const colE=headers.findIndex(h=>h.includes('este')||h==='x'||h==='e');
+      const colN=headers.findIndex(h=>h.includes('norte')||h==='y'||h==='n');
+      const coords=data.slice(1).map(r=>[parseFloat(r[colE]),parseFloat(r[colN])]);
+      handleRows(coords,crs,true);
     };
     reader.readAsBinaryString(file);
   }
 
-  // =====================================================
-  // FUNCIÓN PRINCIPAL: PROCESAMIENTO Y CREACIÓN DEL POLÍGONO
-  // - redondeo a 3 decimales en coordenadas
-  // - área en hectáreas con 3 decimales
-  // =====================================================
+  // ---------- Procesamiento y generación de polígono (coordenadas redondeadas a 3 decimales; área en ha a 3 decimales) ----------
   function handleRows(rows, crs, isArray = false) {
     uploadedLayer.clearLayers();
     let cargados = [];
 
     rows.forEach(r => {
       let x, y;
+
       if (isArray) {
         x = parseFloat(r[0]);
         y = parseFloat(r[1]);
@@ -339,38 +267,32 @@
         x = parseFloat(r.Este || r.X || r.x || r.Longitud || r.Lon || r.lon || r.longitude);
         y = parseFloat(r.Norte || r.Y || r.y || r.Latitud || r.Lat || r.lat || r.latitude);
       }
+
       if (isNaN(x) || isNaN(y)) return;
 
       let latlng;
       if (crs === "4326") {
         latlng = [y, x];
       } else {
-        try {
-          const t = proj4("EPSG:" + crs, "EPSG:4326", [x, y]);
-          latlng = [t[1], t[0]];
-        } catch {
-          latlng = [y, x];
-        }
+        try { const t = proj4("EPSG:" + crs, "EPSG:4326", [x, y]); latlng = [t[1], t[0]]; }
+        catch { latlng = [y, x]; }
       }
 
       // redondeo a 3 decimales
       const rounded = [ parseFloat(latlng[0].toFixed(3)), parseFloat(latlng[1].toFixed(3)) ];
       cargados.push(rounded);
 
-      // dibujar punto
       L.circleMarker(rounded, { radius:5, color:'#007bff', fillColor:'#007bff', fillOpacity:0.9 }).addTo(uploadedLayer);
     });
 
     if (cargados.length >= 3) {
       const first = cargados[0];
       const last = cargados[cargados.length - 1];
-
-      // cerrar polígono si no está cerrado
       if (first[0] !== last[0] || first[1] !== last[1]) cargados.push(first);
 
       const poly = L.polygon(cargados, { color:'#0056b3', fillOpacity:0.15 }).addTo(uploadedLayer);
 
-      // calcular área y añadir etiqueta y registro para descarga
+      // calcular área en ha y añadir etiqueta y registro para descarga
       addOrUpdateLabel(poly);
       saveGeometry(poly);
     }
@@ -388,17 +310,6 @@
       const area_ha = parseFloat((area_m2/10000).toFixed(3)); // ha con 3 decimales
       gj.properties = gj.properties || {};
       gj.properties.area_ha = area_ha;
-
-      // evitar duplicados simples: comparar coordenadas
-      const coordsStr = JSON.stringify(gj.geometry.coordinates);
-      for(let i=0;i<geometries.length;i++){
-        if(JSON.stringify(geometries[i].geometry.coordinates) === coordsStr){
-          geometries[i].properties = geometries[i].properties || {};
-          geometries[i].properties.area_ha = area_ha;
-          return;
-        }
-      }
-
       geometries.push(gj);
     } catch(e){}
   }
@@ -408,77 +319,56 @@
     const data={drawn:drawnItems.toGeoJSON(),gps:gpsLayer.toGeoJSON(),uploaded:uploadedLayer.toGeoJSON(),track:trackCoords};
     localStorage.setItem("bps_sesion",JSON.stringify(data));
   }
-
   window.addEventListener("load",()=>{
     const saved=localStorage.getItem("bps_sesion");
-    if(saved && confirm("🔄 ¿Deseas restaurar tu última sesión?")){
-      const data = JSON.parse(saved);
-      L.geoJSON(data.drawn, { onEachFeature:(f,l)=>{ drawnItems.addLayer(l); if(l instanceof L.Polygon) addOrUpdateLabel(l); }});
-      L.geoJSON(data.gps, { onEachFeature:(f,l)=>{ gpsLayer.addLayer(l); }});
-      L.geoJSON(data.uploaded, { onEachFeature:(f,l)=>{ uploadedLayer.addLayer(l); }});
-      trackCoords = data.track || [];
-      trackLayer.setLatLngs(trackCoords);
-
-      // reconstruir geometries array desde capas cargadas
-      geometries = [];
-      drawnItems.eachLayer(l => { if (l instanceof L.Polygon) saveGeometry(l); });
-      uploadedLayer.eachLayer(l => { if (l instanceof L.Polygon) saveGeometry(l); });
-      gpsLayer.eachLayer(l => { if (l instanceof L.Polygon) saveGeometry(l); });
+    if(saved&&confirm("🔄 ¿Deseas restaurar tu última sesión?")){
+      const data=JSON.parse(saved);
+      L.geoJSON(data.drawn,{onEachFeature:(f,l)=>{drawnItems.addLayer(l);if(l instanceof L.Polygon)addOrUpdateLabel(l);}});;
+      L.geoJSON(data.gps,{onEachFeature:(f,l)=>gpsLayer.addLayer(l)});
+      L.geoJSON(data.uploaded,{onEachFeature:(f,l)=>uploadedLayer.addLayer(l)});
+      trackCoords=data.track||[];trackLayer.setLatLngs(trackCoords);
     }
   });
 
-  // ---------- Descarga GeoJSON (incluye properties.area_ha) ----------
-  document.getElementById('btn-download-geo').onclick = () => {
+  // ---------- Descarga GeoJSON (incluye propiedades con area_ha) ----------
+  document.getElementById('btn-download-geo').onclick=()=>{
     const fc = { type:'FeatureCollection', features: geometries };
-    const blob = new Blob([JSON.stringify(fc)], { type:'application/geo+json' });
+    const blob = new Blob([JSON.stringify(fc)],{type:'application/geo+json'});
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'poligonos.geojson';
-    a.click();
-    URL.revokeObjectURL(url);
+    const a = document.createElement('a'); a.href=url; a.download='poligonos.geojson'; a.click(); URL.revokeObjectURL(url);
     showStatus('✅ GeoJSON descargado');
   };
 
   // ---------- Descarga CSV: centroid_lat, centroid_lon, area_ha ----------
-  document.getElementById('btn-download-csv').onclick = () => {
+  document.getElementById('btn-download-csv').onclick=()=>{
     let csv = "centroid_lat,centroid_lon,area_ha\n";
-    geometries.forEach(f => {
-      if (f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')){
+    geometries.forEach(f=>{
+      if(f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')){
         const centroid = turf.centroid(f).geometry.coordinates; // [lon, lat]
         const area_ha = (f.properties && f.properties.area_ha) ? f.properties.area_ha : parseFloat((turf.area(f)/10000).toFixed(3));
         csv += `${centroid[1]},${centroid[0]},${area_ha}\n`;
       }
     });
-    const blob = new Blob([csv], { type:'text/csv' });
+    const blob = new Blob([csv],{type:'text/csv'});
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'poligonos_centroides.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+    const a = document.createElement('a'); a.href=url; a.download='poligonos_centroides.csv'; a.click(); URL.revokeObjectURL(url);
     showStatus('✅ CSV descargado');
   };
 
   // ---------- Limpiar ----------
-  document.getElementById('btn-clear').onclick = () => {
-    if(!confirm('¿Eliminar todo?')) return;
-    gpsLayer.clearLayers();
-    drawnItems.clearLayers();
-    uploadedLayer.clearLayers();
-    trackLayer.setLatLngs([]);
-    gpsVertices = []; trackCoords = []; activePolygon = null; lastTrackPoint = null;
+  document.getElementById('btn-clear').onclick=()=>{
+    if(!confirm('¿Eliminar todo?'))return;
+    gpsLayer.clearLayers();drawnItems.clearLayers();uploadedLayer.clearLayers();trackLayer.setLatLngs([]);
+    gpsVertices=[];trackCoords=[];activePolygon=null;lastTrackPoint=null;
     geometries = [];
-    if(gpsMarker){ map.removeLayer(gpsMarker); gpsMarker = null; }
-    if(accuracyCircle){ map.removeLayer(accuracyCircle); accuracyCircle = null; }
-    clearAllLabels();
-    infoPrecision.innerText = '📡 Precisión: -- m';
-    localStorage.removeItem("bps_sesion");
-    if(watchId){ navigator.geolocation.clearWatch(watchId); watchId = null; document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-location-dot"></i>&nbsp;Activar GPS'; }
+    if(gpsMarker){map.removeLayer(gpsMarker);gpsMarker=null;}
+    if(accuracyCircle){map.removeLayer(accuracyCircle);accuracyCircle=null;}
+    clearAllLabels();infoPrecision.innerText='📡 Precisión: -- m';localStorage.removeItem("bps_sesion");
+    if(watchId){navigator.geolocation.clearWatch(watchId);watchId=null;document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-location-dot"></i>&nbsp;Activar GPS';}
     showStatus('🧹 Todo eliminado','#d9534f');
   };
 
-</script>
+  </script>
 </body>
 </html>
 
