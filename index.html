@@ -37,6 +37,7 @@
     #status-msg.show { opacity: 1; }
   </style>
 </head>
+
 <body>
 
   <header>
@@ -44,7 +45,7 @@
     <p>Especialista en Gestión del Catastro Forestal - BPS</p>
   </header>
 
-  <div id="status-msg" role="status" aria-live="polite"></div>
+  <div id="status-msg"></div>
 
   <div class="toolbar">
     <button id="btn-gps"><i class="fa-solid fa-location-dot"></i>&nbsp;Activar GPS</button>
@@ -71,14 +72,13 @@
         <div><span class="dot" style="background:#f1c40f"></span><small>5-7m</small></div>
         <div><span class="dot" style="background:#e74c3c"></span><small>&gt;7m</small></div>
       </div>
-      <button id="btn-download-geo" title="Descargar GeoJSON"><i class="fa-solid fa-download"></i></button>
-      <button id="btn-download-csv" title="Descargar CSV"><i class="fa-solid fa-file-csv"></i></button>
+      <button id="btn-download-geo"><i class="fa-solid fa-download"></i></button>
+      <button id="btn-download-csv"><i class="fa-solid fa-file-csv"></i></button>
     </div>
   </div>
 
   <div id="map"></div>
 
-  <!-- Librerías -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
@@ -87,22 +87,25 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
 
   <script>
+  /* ---------- FUNCIONES DE UI ---------- */
   function showStatus(msg, color="#0b6b2b") {
     const el = document.getElementById('status-msg');
     el.style.background = color;
     el.textContent = msg;
     el.classList.add('show');
     clearTimeout(el._t);
-    el._t = setTimeout(()=> el.classList.remove('show'), 1800);
+    el._t = setTimeout(() => el.classList.remove('show'), 1800);
   }
 
+  /* ---------- DEFINICIÓN DE PROYECCIONES ---------- */
   proj4.defs("EPSG:32717","+proj=utm +zone=17 +south +datum=WGS84 +units=m +no_defs");
   proj4.defs("EPSG:32718","+proj=utm +zone=18 +south +datum=WGS84 +units=m +no_defs");
   proj4.defs("EPSG:32719","+proj=utm +zone=19 +south +datum=WGS84 +units=m +no_defs");
 
+  /* ---------- MAPA ---------- */
   const map = L.map('map').setView([-7.2, -78.5], 8);
-  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
-  const googleSat = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{attribution:'© Google'});
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  const googleSat = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
   L.control.layers({"OSM":osm,"Google Satélite":googleSat}).addTo(map);
 
   const gpsLayer = new L.FeatureGroup().addTo(map);
@@ -113,9 +116,10 @@
   let gpsMarker=null, accuracyCircle=null, watchId=null;
   let gpsVertices=[], trackCoords=[];
   let activePolygon=null, lastTrackPoint=null;
-  const precisionGood=5, precisionMed=7;
+
   const infoPrecision=document.getElementById('info-precision');
 
+  /* ---------- ETIQUETAS DE ÁREA ---------- */
   function addOrUpdateLabel(layer){
     try {
       const a = turf.area(layer.toGeoJSON());
@@ -126,16 +130,17 @@
   }
 
   function clearAllLabels(){
-    map.eachLayer(l => { if(l instanceof L.Marker && l.options.icon?.options?.className === 'label') map.removeLayer(l); });
+    map.eachLayer(l => { 
+      if(l instanceof L.Marker && l.options.icon?.options?.className === 'label') 
+        map.removeLayer(l); 
+    });
     drawnItems.eachLayer(l => { if(l._label){ map.removeLayer(l._label); delete l._label; }});
   }
 
-  // ---------------------
-  // DIBUJO MANUAL
-  // ---------------------
+  /* ---------- DIBUJO MANUAL ---------- */
   const drawControl = new L.Control.Draw({
     draw:{ polygon:{allowIntersection:false,showArea:true,shapeOptions:{color:'#0b6b2b'}}, marker:true, polyline:false, rectangle:false, circle:false, circlemarker:false },
-    edit:{ featureGroup:drawnItems, edit:true, remove:true }
+    edit:{ featureGroup:drawnItems }
   });
   map.addControl(drawControl);
 
@@ -146,16 +151,20 @@
   });
 
   map.on(L.Draw.Event.EDITED,e=>{
-    e.layers.eachLayer(l=>{ if(l instanceof L.Polygon) addOrUpdateLabel(l); });
+    e.layers.eachLayer(l=>{ 
+      if(l instanceof L.Polygon) addOrUpdateLabel(l);
+    });
     saveSession();
   });
 
-  map.on(L.Draw.Event.DELETED,()=>{ clearAllLabels(); saveSession(); });
+  map.on(L.Draw.Event.DELETED,()=>{
+    clearAllLabels();
+    saveSession();
+  });
 
-  // ---------------------
-  // GPS
-  // ---------------------
+  /* ---------- GPS DINÁMICO ---------- */
   document.getElementById('btn-gps').onclick=()=>{
+
     if(watchId){
       navigator.geolocation.clearWatch(watchId);
       watchId=null;
@@ -163,13 +172,14 @@
       showStatus('GPS detenido','#d9534f');
       return;
     }
+
     if(!navigator.geolocation) return alert('GPS no disponible.');
 
     document.getElementById('btn-gps').innerHTML='<i class="fa-solid fa-stop"></i>&nbsp;Detener GPS';
     showStatus('GPS activado');
 
     watchId=navigator.geolocation.watchPosition(p=>{
-      const lat=p.coords.latitude,lng=p.coords.longitude,acc=p.coords.accuracy;
+      const lat=p.coords.latitude, lng=p.coords.longitude, acc=p.coords.accuracy;
 
       if(!gpsMarker)
         gpsMarker=L.circleMarker([lat,lng],{radius:8,color:'#ff5722',fillColor:'#ff5722',fillOpacity:1}).addTo(map);
@@ -178,43 +188,17 @@
       gpsMarker.accuracy=acc;
 
       if(accuracyCircle) map.removeLayer(accuracyCircle);
-      accuracyCircle=L.circle([lat,lng],{radius:acc,color:colorForPrecision(acc),weight:1,fillOpacity:0.08}).addTo(map);
-
-      if(acc<precisionGood) gpsMarker.setStyle({color:'#2ecc71',fillColor:'#2ecc71'});
-      else if(acc<=precisionMed) gpsMarker.setStyle({color:'#f1c40f',fillColor:'#f1c40f'});
-      else gpsMarker.setStyle({color:'#e74c3c',fillColor:'#e74c3c'});
-
-      const current=[lat,lng];
-      if(!lastTrackPoint || distanceMeters(lastTrackPoint,current)>10){
-        trackCoords.push(current);
-        trackLayer.setLatLngs(trackCoords);
-        lastTrackPoint=current;
-      }
+      accuracyCircle=L.circle([lat,lng],{radius:acc,color:'#0b6b2b',fillOpacity:0.08}).addTo(map);
 
       infoPrecision.innerText=`📡 Precisión: ${acc.toFixed(1)} m`;
       saveSession();
+
     },err=>alert("Error GPS: "+err.message),{enableHighAccuracy:true});
   };
 
-  function colorForPrecision(acc){
-    if(acc<=5) return '#2ecc71';
-    if(acc<=7) return '#f1c40f';
-    return '#e74c3c';
-  }
-
-  function distanceMeters(a,b){
-    const R=6371000,rad=Math.PI/180;
-    const dLat=(b[0]-a[0])*rad, dLon=(b[1]-a[1])*rad;
-    const lat1=a[0]*rad, lat2=b[0]*rad;
-    const hav=Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
-    return 2*R*Math.asin(Math.sqrt(hav));
-  }
-
+  /* ---------- AGREGAR VÉRTICE GPS ---------- */
   document.getElementById('btn-gps-vertex').onclick=()=>{
     if(!gpsMarker) return alert('Activa el GPS primero.');
-    const acc=gpsMarker.accuracy||999;
-
-    if(acc>precisionMed && !confirm(`Precisión baja (${acc.toFixed(1)} m). ¿Agregar vértice igualmente?`)) return;
 
     const p=gpsMarker.getLatLng();
     gpsVertices.push([p.lat,p.lng]);
@@ -224,7 +208,8 @@
     if(!activePolygon && gpsVertices.length>=3){
       activePolygon=L.polygon(gpsVertices,{color:'#0b6b2b',fillOpacity:0.12}).addTo(gpsLayer);
       addOrUpdateLabel(activePolygon);
-    } else if(activePolygon){
+    }
+    else if(activePolygon){
       activePolygon.setLatLngs(gpsVertices);
       addOrUpdateLabel(activePolygon);
     }
@@ -232,16 +217,16 @@
     saveSession();
   };
 
-  // ---------------------
-  // ARCHIVOS (CSV/EXCEL)
-  // ---------------------
+  /* ---------- CARGA DE ARCHIVOS ---------- */
   document.getElementById('btn-upload').onclick=()=>document.getElementById('file-input').click();
 
   document.getElementById('file-input').onchange=e=>{
     const file=e.target.files[0];
     if(!file) return;
+
     const ext=file.name.split('.').pop().toLowerCase();
     const crs=document.getElementById('crs-select').value;
+
     if(ext==='csv') parseCSV(file,crs);
     else parseXLSX(file,crs);
   };
@@ -256,167 +241,93 @@
       const wb=XLSX.read(e.target.result,{type:'binary'});
       const ws=wb.Sheets[wb.SheetNames[0]];
       const data=XLSX.utils.sheet_to_json(ws,{header:1});
+
       const headers=data[0].map(h=>String(h).toLowerCase());
       const colE=headers.findIndex(h=>h.includes('este')||h==='x'||h==='e');
       const colN=headers.findIndex(h=>h.includes('norte')||h==='y'||h==='n');
+
       const coords=data.slice(1).map(r=>[parseFloat(r[colE]),parseFloat(r[colN])]);
+
       handleRows(coords,crs,true);
     };
     reader.readAsBinaryString(file);
   }
 
-  // -----------------------------
-  // *** FUNCIÓN FINAL COMPLETA ***
-  // -----------------------------
-  function handleRows(rows, crs, isArray = false) {
+  /* ------------------------------------------------------
+     NUEVA FUNCIÓN COMPLETA: GENERA EL POLÍGONO + ÁREA
+     ------------------------------------------------------ */
+  function handleRows(rows, crs, isArray=false) {
     uploadedLayer.clearLayers();
-    let cargados = [];
+
+    let cargados = [];   // almacena todos los puntos transformados
 
     rows.forEach(r => {
-        let x, y;
+      let x, y;
 
-        if (isArray) {
-            x = parseFloat(r[0]);
-            y = parseFloat(r[1]);
-        } else {
-            x = parseFloat(
-                r.Este || r.X || r.x || r.Longitud || r.Lon || r.lon || r.longitude
-            );
-            y = parseFloat(
-                r.Norte || r.Y || r.y || r.Latitud || r.Lat || r.lat || r.latitude
-            );
+      if (isArray) {
+        x = r[0];
+        y = r[1];
+      } else {
+        x = parseFloat(r.Este || r.X || r.lon || r.Longitud);
+        y = parseFloat(r.Norte || r.Y || r.lat || r.Latitud);
+      }
+
+      if (isNaN(x) || isNaN(y)) return;
+
+      let latlng;
+
+      if (crs === '4326') {
+        latlng = [y, x];
+      } else {
+        try {
+          const t = proj4('EPSG:' + crs, 'EPSG:4326', [x, y]);
+          latlng = [t[1], t[0]];
+        } catch {
+          latlng = [y, x];
         }
+      }
 
-        if (isNaN(x) || isNaN(y)) return;
+      cargados.push(latlng);
 
-        let latlng;
-        if (crs === "4326") {
-            latlng = [y, x];
-        } else {
-            try {
-                const t = proj4("EPSG:" + crs, "EPSG:4326", [x, y]);
-                latlng = [t[1], t[0]];
-            } catch {
-                latlng = [y, x];
-            }
-        }
-
-        cargados.push(latlng);
-
-        L.circleMarker(latlng, {
-            radius: 5,
-            color: "#007bff",
-            fillColor: "#007bff",
-            fillOpacity: 1
-        }).addTo(uploadedLayer);
+      L.circleMarker(latlng, {
+        radius: 5,
+        color: '#007bff',
+        fillColor: '#007bff',
+        fillOpacity: 0.9
+      }).addTo(uploadedLayer);
     });
 
+    /* ------ SI EXISTEN ≥ 3 PUNTOS, FORMAR POLÍGONO ------ */
     if (cargados.length >= 3) {
-        const first = cargados[0];
-        const last = cargados[cargados.length - 1];
+      const poly = L.polygon(cargados, {
+        color: "#0056b3",
+        fillOpacity: 0.15
+      }).addTo(uploadedLayer);
 
-        if (first[0] !== last[0] || first[1] !== last[1]) {
-            cargados.push(first);
-        }
-
-        const poly = L.polygon(cargados, {
-            color: "#0056b3",
-            fillOpacity: 0.2
-        }).addTo(uploadedLayer);
-
-        addOrUpdateLabel(poly);
+      addOrUpdateLabel(poly);
     }
 
     if (uploadedLayer.getLayers().length > 0) {
-        map.fitBounds(uploadedLayer.getBounds().pad(0.15));
+      map.fitBounds(uploadedLayer.getBounds().pad(0.1));
     }
 
-    showStatus("✅ Coordenadas cargadas, polígono generado y área calculada");
+    showStatus("✅ Coordenadas cargadas y área generada correctamente");
+
     saveSession();
   }
 
-  // ---------------------
-  // SESIÓN
-  // ---------------------
+  /* ---------- GUARDAR SESIÓN ---------- */
   function saveSession(){
-    const data={drawn:drawnItems.toGeoJSON(),gps:gpsLayer.toGeoJSON(),uploaded:uploadedLayer.toGeoJSON(),track:trackCoords};
+    const data={
+      drawn:drawnItems.toGeoJSON(),
+      gps:gpsLayer.toGeoJSON(),
+      uploaded:uploadedLayer.toGeoJSON(),
+      track:trackCoords
+    };
     localStorage.setItem("bps_sesion",JSON.stringify(data));
   }
 
-  window.addEventListener("load",()=>{
-    const saved=localStorage.getItem("bps_sesion");
-    if(saved && confirm("🔄 ¿Deseas restaurar tu última sesión?")){
-      const data=JSON.parse(saved);
-      L.geoJSON(data.drawn,{onEachFeature:(f,l)=>{drawnItems.addLayer(l);if(l instanceof L.Polygon)addOrUpdateLabel(l);}});
-      L.geoJSON(data.gps,{onEachFeature:(f,l)=>gpsLayer.addLayer(l)});
-      L.geoJSON(data.uploaded,{onEachFeature:(f,l)=>uploadedLayer.addLayer(l)});
-      trackCoords=data.track||[];
-      trackLayer.setLatLngs(trackCoords);
-    }
-  });
-
-  // ---------------------
-  // DESCARGAS
-  // ---------------------
-  document.getElementById('btn-download-geo').onclick=()=>{
-    const features=[];
-    gpsLayer.eachLayer(l=>features.push(l.toGeoJSON()));
-    drawnItems.eachLayer(l=>features.push(l.toGeoJSON()));
-    uploadedLayer.eachLayer(l=>features.push(l.toGeoJSON()));
-
-    if(trackCoords.length>1)
-      features.push({
-        type:'Feature',
-        geometry:{type:'LineString',coordinates:trackCoords.map(v=>[v[1],v[0]])},
-        properties:{type:'track'}
-      });
-
-    const geojson={type:'FeatureCollection',features};
-    const blob=new Blob([JSON.stringify(geojson)],{type:'application/geo+json'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download='datos.geojson';
-    a.click();
-    URL.revokeObjectURL(url);
-
-    showStatus('✅ GeoJSON descargado');
-  };
-
-  document.getElementById('btn-download-csv').onclick=()=>{
-    let csv="tipo,lat,lon\n";
-    gpsLayer.eachLayer(l=>{
-      if(l.getLatLng) csv+=`gps_point,${l.getLatLng().lat},${l.getLatLng().lng}\n`;
-      else if(l.getLatLngs)
-        l.getLatLngs()[0].forEach(p=>csv+=`gps_polygon,${p.lat},${p.lng}\n`);
-    });
-
-    drawnItems.eachLayer(l=>{
-      if(l.getLatLngs)
-        l.getLatLngs()[0].forEach(p=>csv+=`manual_polygon,${p.lat},${p.lng}\n`);
-    });
-
-    uploadedLayer.eachLayer(l=>{
-      if(l.getLatLng)
-        csv+=`uploaded_point,${l.getLatLng().lat},${l.getLatLng().lng}\n`;
-    });
-
-    trackCoords.forEach(v=>csv+=`track,${v[0]},${v[1]}\n`);
-
-    const blob=new Blob([csv],{type:'text/csv'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download='datos.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-
-    showStatus('✅ CSV descargado');
-  };
-
-  // ---------------------
-  // LIMPIAR
-  // ---------------------
+  /* ---------- LIMPIAR ---------- */
   document.getElementById('btn-clear').onclick=()=>{
     if(!confirm('¿Eliminar todo?')) return;
 
@@ -425,17 +336,13 @@
     uploadedLayer.clearLayers();
     trackLayer.setLatLngs([]);
 
-    gpsVertices=[];
-    trackCoords=[];
-    activePolygon=null;
-    lastTrackPoint=null;
+    gpsVertices=[]; trackCoords=[]; activePolygon=null; lastTrackPoint=null;
 
     if(gpsMarker){ map.removeLayer(gpsMarker); gpsMarker=null; }
     if(accuracyCircle){ map.removeLayer(accuracyCircle); accuracyCircle=null; }
 
     clearAllLabels();
     infoPrecision.innerText='📡 Precisión: -- m';
-
     localStorage.removeItem("bps_sesion");
 
     if(watchId){
@@ -448,5 +355,6 @@
   };
 
   </script>
+
 </body>
 </html>
